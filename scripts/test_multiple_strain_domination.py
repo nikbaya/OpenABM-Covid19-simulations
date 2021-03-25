@@ -41,7 +41,7 @@ def get_params_swig():
 def get_model_swig( params ):
     return Model( params )
 
-def test_multiple_strain_domination( self, test_params, n_extra_infections, t_extra_infections, t_check_after, strain_multiplier ):
+def test_multiple_strain_domination(test_params, n_extra_infections, t_extra_infections, t_check_after, strain_multiplier ):
     # copied from test suite: https://github.com/nikbaya/OpenABM-Covid19/blob/97574a285840a977797d184c0dffc86f33e327ce/tests/test_infection_dynamics.py
     params = get_params_swig()
     for param, value in test_params.items():
@@ -82,7 +82,8 @@ def test_multiple_strain_domination( self, test_params, n_extra_infections, t_ex
     return df_n_trans
 
 def main():
-    test_params = dict(n_total = 1e4,
+    test_params = dict(rng_seed = 1,
+                       n_total = 1e4,
                        n_seed_infection = 5,
                        end_time = 80,
                        infectious_rate = 3
@@ -112,7 +113,7 @@ def main():
     plt.xlabel('days')
     plt.ylabel('transmissions')
     plt.legend(loc='upper left')
-    plt.savefig(f'{PLOT_DIR}/test_multiple_strains.png', dpi=300)
+    plt.savefig(f'{PLOT_DIR}/test_multiple_strains.seed_{test_params["rng_seed"]}.png', dpi=300)
     
 if __name__=='__main__':
     main()
