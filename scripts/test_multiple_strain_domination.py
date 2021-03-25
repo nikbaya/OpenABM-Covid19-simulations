@@ -113,6 +113,7 @@ def main():
     plt.xlabel('days')
     plt.ylabel('transmissions')
     plt.legend(loc='upper left')
+    plt.title(f'seed: {test_params["rng_seed"]}')
     plt.savefig(f'{PLOT_DIR}/test_multiple_strains.seed_{test_params["rng_seed"]}.png', dpi=300)
     
 if __name__=='__main__':
