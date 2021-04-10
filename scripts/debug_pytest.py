@@ -10,12 +10,10 @@ Debug pytest failures
 
 import os, subprocess, shutil
 import numpy as np, pandas as pd
+import matplotlib.pyplot as plt
 from COVID19.parameters import ParameterSet
 
-
 OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
-
-SUSCEPTIBLE = 0
 
 os.chdir(OPENABM_DIR)
 from tests import constant
@@ -60,10 +58,21 @@ def set_up():
 def destroy():
     shutil.rmtree(constant.DATA_DIR_TEST, ignore_errors=True)
     shutil.rmtree(constant.IBM_DIR_TEST, ignore_errors = True)
-
+    
 def test_monoton_mild_infectious_factor(
             self,
-            **kwargs,    
+            n_total,
+            end_time,
+            mild_fraction_0_9,
+            mild_fraction_10_19,
+            mild_fraction_20_29,
+            mild_fraction_30_39,
+            mild_fraction_40_49,
+            mild_fraction_50_59,
+            mild_fraction_60_69,
+            mild_fraction_70_79,
+            mild_fraction_80,
+            mild_infectious_factor  
         ):
         """
         Test that monotonic change (increase, decrease, or equal) in mild_infectious_factor values
@@ -94,80 +103,55 @@ def test_monoton_mild_infectious_factor(
         
         # calculate the total infections for the first entry in the asymptomatic_infectious_factor values
         params = ParameterSet(constant.TEST_DATA_FILE, line_number = 1)
-        mild_infectious_factor_current = mean_total_infected(params, mild_infectious_factor[0])
-        
-        print('current\tnew\t\tcurrent\tnew')        
+        params.set_param( "end_time", end_time )
+        params.set_param( "n_total", n_total )
+        params.set_param( "mild_fraction_0_9", mild_fraction_0_9 )
+        params.set_param( "mild_fraction_10_19", mild_fraction_10_19 )
+        params.set_param( "mild_fraction_20_29", mild_fraction_20_29 )
+        params.set_param( "mild_fraction_30_39", mild_fraction_30_39 )
+        params.set_param( "mild_fraction_40_49", mild_fraction_40_49 )
+        params.set_param( "mild_fraction_50_59", mild_fraction_50_59 )
+        params.set_param( "mild_fraction_60_69", mild_fraction_60_69 )
+        params.set_param( "mild_fraction_70_79", mild_fraction_70_79 )
+        params.set_param( "mild_fraction_80", mild_fraction_80 )
+        mild_infectious_factor_current = mild_infectious_factor[0]
+        mean_total_infected_current = mean_total_infected(params, mild_infectious_factor_current)
+
         # calculate the total infections for the rest and compare with the current
+        for idx in range(1, len(mild_infectious_factor)):
+            mild_infectious_factor_new = mild_infectious_factor[idx]
+            mean_total_infected_new = mean_total_infected(params, mild_infectious_factor_new)
             
-        
-        for idx in range(1, len(kwargs['mild_infectious_factor'])):
-            for k,v in kwargs.items():
-                if k=="mild_infectious_factor":
-                    params.set_param(k, v[idx])
-                else:
-                    params.set_param(k, v)
-                
-            mild_infectious_factor_new = kwargs['mild_infectious_factor'][idx]
-            total_infected_list_new = []
-            
-            for rng_seed in rng_seed_range:
-                params.set_param('rng_seed', rng_seed)
-                params.write_params(constant.TEST_DATA_FILE)
-                
-                file_output   = open(constant.TEST_OUTPUT_FILE, "w")
-                _             = subprocess.run([constant.command], stdout = file_output, shell = True)
-                df_output_new = pd.read_csv(constant.TEST_OUTPUT_FILE, comment = "#", sep = ",")
-                
-                total_infected_new = df_output_new[ "total_infected" ].iloc[-1]
-                total_infected_list_new.append(total_infected_new)
-            
-            mean_total_infected_new     = np.mean(total_infected_list_new)
-            min_current, max_current = min(total_infected_list_current), max(total_infected_list_current)
-            min_new, max_new = min(total_infected_list_new), max(total_infected_list_new)
-            print(f'{mild_infectious_factor_current}\t\t{mild_infectious_factor_new}'+
-                  f'\t\t{mean_total_infected_current}\t\t{mean_total_infected_new}\t'+
-                  f'({min_current}-{max_current})\t({min_new}-{max_new})')
             # check the total infections
             # if mild_infectious_factor_new > mild_infectious_factor_current:
-            #     np.testing.assert_equal( total_infected_new > total_infected_current, True)
+            #     np.testing.assert_equal( mean_total_infected_new > mean_total_infected_current, True)
             # elif mild_infectious_factor_new < mild_infectious_factor_current:
-            #     np.testing.assert_equal( total_infected_new < total_infected_current, True)
+            #     np.testing.assert_equal( mean_total_infected_new < mean_total_infected_current, True)
             # elif mild_infectious_factor_new == mild_infectious_factor_current:
-            #     np.testing.assert_allclose( total_infected_new, total_infected_current, atol = 0.01)
-            
-            # check the total infections
-            if mild_infectious_factor_new > mild_infectious_factor_current:
-                np.testing.assert_equal( mean_total_infected_new > mean_total_infected_current, True)
-            elif mild_infectious_factor_new < mild_infectious_factor_current:
-                np.testing.assert_equal( mean_total_infected_new < mean_total_infected_current, True)
-            elif mild_infectious_factor_new == mild_infectious_factor_current:
-                np.testing.assert_allclose( mean_total_infected_new, mean_total_infected_current, atol = 0.01)
+            #     np.testing.assert_allclose( mean_total_infected_new, mean_total_infected_current, atol = 0.01)
+            print(f'{mild_infectious_factor_current}\t\t{mild_infectious_factor_new}'+
+                  f'\t\t{mean_total_infected_current}\t\t{mean_total_infected_new}')
             
             # refresh current values
             mild_infectious_factor_current = mild_infectious_factor_new
             mean_total_infected_current = mean_total_infected_new
 
-def test_infectiousness_multiplier( self, kwargs, rng_seed_range=range(1,2)):
+def test_infectiousness_multiplier( self, test_params, sd_multipliers ):
     """
     Check that the total infected stays the same up to 0.5 SD.
-    """
-    test_params = kwargs['test_params']
-    sd_multipliers = kwargs['sd_multipliers']
-    
+    """    
     ordered_multipliers = sorted( sd_multipliers )
-    # transmissions = []
+    transmissions = []
     total_infected_means = []
-    total_infected_range = []
-    for idx, sd_multiplier in enumerate(ordered_multipliers):
+    for sd_multiplier in ordered_multipliers:
         total_infected = []
-        for rng_seed in rng_seed_range:
+        for rng_seed in range(1,21):
             params = utils.get_params_swig()
             for param, value in test_params.items():
                 params.set_param( param, value )  
             params.set_param( "sd_infectiousness_multiplier", sd_multiplier )
             params.set_param( "rng_seed", rng_seed )
             model  = utils.get_model_swig( params )
-            # print(f'rng_seed: {model.c_params.rng_seed}')
               
             for time in range( test_params[ "end_time" ] ):
                 model.one_time_step()
@@ -179,19 +163,12 @@ def test_infectiousness_multiplier( self, kwargs, rng_seed_range=range(1,2)):
             del params
 
         total_infected_means.append(np.mean(total_infected))        
-        total_infected_range.append(f'{min(total_infected)}-{max(total_infected)}')
-        print(str(total_infected_means[0])+'\t'+str(total_infected_means[idx])+
-              '\t'+str(abs(total_infected_means[0]-total_infected_means[idx])/total_infected_means[idx])+
-              '\t'+total_infected_range[idx])
-
-    # np.testing.assert_allclose([base_infected]*len(total_infected), total_infected, rtol=0.05)
-        
+    
+    # print('\t'.join(([str(total_infected_means[0])]*len(total_infected_means))))
+    # print('\t'.join([str(x) for x in total_infected_means]))
     base_infected_mean = total_infected_means[0]
-    print(rng_seed_range)
-    print('\t'.join(([str(base_infected_mean)]*len(total_infected_means))))
-    print('\t'.join([str(x) for x in total_infected_means]))
-    print('\t'.join(['{0:.4f}'.format(abs(x-y)/y) for x,y in zip([base_infected_mean]*len(total_infected_means), total_infected_means)]))
-
+    np.testing.assert_allclose([base_infected_mean]*len(total_infected_means), total_infected_means, rtol=0.05)
+        
 def test_custom_occupation_network( self, test_params, rng_seed_range=range(1,2) ):
     """
       For user defined occupational networks,
@@ -304,14 +281,85 @@ def test_custom_occupation_network( self, test_params, rng_seed_range=range(1,2)
             rtol = 0.02
             np.testing.assert_allclose(actual,expected,rtol=rtol,err_msg="Expected mean unique occupational contacts over multiple days not as expected")
 
+def test_cross_immunity( test_params = None ):
+    def run_simulation( test_params, cross_immunity, trans_mult, rng_seed_range=range(1,11) ):
+        
+        results = []
+        
+        for rng_seed in rng_seed_range:
+            params = utils.get_params_swig()
+            if test_params is not None:
+                for param, value in test_params.items():
+                    params.set_param( param, value )  
+            params.set_param( 'rng_seed', rng_seed )
+            model  = utils.get_model_swig( params )
+        
+            model.write_individual_file()
+            df_indiv = pd.read_csv( constant.TEST_INDIVIDUAL_FILE, comment="#", sep=",", skipinitialspace=True )
+            idxs     = df_indiv[ df_indiv[ "current_status" ] == constant.EVENT_TYPES.SUSCEPTIBLE.value ]['ID'].to_numpy()
+            n_susc   = len( idxs )
+            n_extra_infections      = model.c_params.n_seed_infection # seed both strains with the same number of infections
+            strain_idx              = 1
+            transmission_multiplier = trans_mult
+            
+            np.random.seed(model.c_params.rng_seed)
+            inf_id = np.random.choice( n_susc, n_extra_infections, replace=False)
+            for idx in range( n_extra_infections ):    
+                model.seed_infect_by_idx( 
+                    ID = idxs[ inf_id[ idx ] ], 
+                    strain_idx = strain_idx, 
+                    transmission_multiplier=transmission_multiplier
+                )
+            model.set_cross_immunity_matrix(cross_immunity)
+            
+            for time in range( model.c_params.end_time ):
+                model.one_time_step()
+    
+            results.append(model.results)
+            del model, params
+        
+        df = pd.concat(results, axis=0)
+        df_dict = {agg_fn:df.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
+        
+        # model.write_transmissions()
+        # df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )  
+        
+        return df_dict
+    
+    color_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    test_params = {'n_total':10000,
+                   'end_time': 200}
+    trans_mult = 0.5
+    cross_immunity_list = [[[1,1],[1,1]],
+                           [[1,0],[0,1]],
+                           [[1,1],[0,1]],
+                           [[1,0],[1,1]]]
+    rng_seed_range = range(1,51)
+    df_dict_list = [run_simulation( test_params, cross_immunity=cross_immunity, trans_mult=trans_mult, rng_seed_range=rng_seed_range)
+                    for cross_immunity in cross_immunity_list]    
+    field = 'total_infected'
+    for idx, df_dict in enumerate(df_dict_list):
+        x = df_dict['mean'].index
+        mean = df_dict['mean'][field]
+        sem = df_dict['sem'][field]
+        plt.plot(x, mean, label=str(cross_immunity_list[idx]), c=color_list[idx])
+        plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[idx], alpha=0.1)
+    plt.legend()
+    plt.xlabel('time')
+    plt.ylabel(field)
+    plt.title(', '.join([f'{k}:{v}' for k,v in test_params.items()]+
+                        [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']))
+    plt.savefig(f'/Users/nbaya/Downloads/cross_immunity.{field}.reps{len(rng_seed_range)}.transmult{trans_mult}.png', dpi=300)
 
 def main():
     destroy()
     set_up()
+    
     kwargs = test_infection_dynamics.TestClass.params['test_monoton_mild_infectious_factor'][0].copy()
-    test_monoton_mild_infectious_factor(self=test_infection_dynamics.TestClass, kwargs=kwargs, rng_seed_range=range(1,21))
-    # kwargs = test_infection_dynamics.TestClass.params['test_infectiousness_multiplier'][0].copy()
-    # test_infectiousness_multiplier(self=test_infection_dynamics.TestClass, kwargs=kwargs, rng_seed_range=range(1,21))
+    test_monoton_mild_infectious_factor(self=test_infection_dynamics.TestClass, **kwargs)
+    
+    kwargs = test_infection_dynamics.TestClass.params['test_infectiousness_multiplier'][0].copy()
+    test_infectiousness_multiplier(self=test_infection_dynamics.TestClass, **kwargs)
     
     kwargs = test_network.TestClass.params['test_custom_occupation_network'].copy()
     test_params_list = [x['test_params'] for x in kwargs]
@@ -321,5 +369,7 @@ def main():
         test_params = test_params_list[-1]
         test_params['rng_seed'] = rng_seed
         test_custom_occupation_network(self=test_network.TestClass, test_params=test_params)        
+
+    
         
     destroy()
