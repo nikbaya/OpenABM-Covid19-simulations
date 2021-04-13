@@ -282,74 +282,168 @@ def test_custom_occupation_network( self, test_params, rng_seed_range=range(1,2)
             np.testing.assert_allclose(actual,expected,rtol=rtol,err_msg="Expected mean unique occupational contacts over multiple days not as expected")
 
 def test_cross_immunity( test_params = None ):
-    def run_simulation( test_params, cross_immunity, trans_mult, rng_seed_range=range(1,11) ):
+    def run_simulation( test_params, cross_immunity, trans_mult, n_seed_infections, 
+                       n_strains, rng_seed_range=range(1,11) ):
+        
+        total_seed_infections = sum(n_seed_infections)
         
         results = []
-        
+        infections = []
+        print(cross_immunity)
         for rng_seed in rng_seed_range:
             params = utils.get_params_swig()
             if test_params is not None:
                 for param, value in test_params.items():
                     params.set_param( param, value )  
             params.set_param( 'rng_seed', rng_seed )
+            params.set_param( 'n_seed_infection', 0 ) # manually seed infections for each strain later
             model  = utils.get_model_swig( params )
-        
-            model.write_individual_file()
-            df_indiv = pd.read_csv( constant.TEST_INDIVIDUAL_FILE, comment="#", sep=",", skipinitialspace=True )
-            idxs     = df_indiv[ df_indiv[ "current_status" ] == constant.EVENT_TYPES.SUSCEPTIBLE.value ]['ID'].to_numpy()
-            n_susc   = len( idxs )
-            n_extra_infections      = model.c_params.n_seed_infection # seed both strains with the same number of infections
-            strain_idx              = 1
-            transmission_multiplier = trans_mult
-            
-            np.random.seed(model.c_params.rng_seed)
-            inf_id = np.random.choice( n_susc, n_extra_infections, replace=False)
-            for idx in range( n_extra_infections ):    
-                model.seed_infect_by_idx( 
-                    ID = idxs[ inf_id[ idx ] ], 
-                    strain_idx = strain_idx, 
-                    transmission_multiplier=transmission_multiplier
-                )
             model.set_cross_immunity_matrix(cross_immunity)
+            np.random.seed(model.c_params.rng_seed)
+        
+            if total_seed_infections>0:
+                model.write_individual_file()
+                df_indiv = pd.read_csv( constant.TEST_INDIVIDUAL_FILE, comment="#", sep=",", skipinitialspace=True )
+                idxs     = df_indiv[ df_indiv[ "current_status" ] == constant.EVENT_TYPES.SUSCEPTIBLE.value ]['ID'].to_numpy()
+                n_susc   = len( idxs )
+                inf_id = np.random.choice( n_susc, total_seed_infections, replace=False) # individuals to infect
+                seed_params = [(strain_idx, trans_mult[strain_idx]) 
+                               for strain_idx in range(n_strains) 
+                               for seed_idx in range(n_seed_infections[strain_idx])] # parameter tuples for each seed infection
+                
+                for ind_idx, (strain_idx, transmission_multiplier) in enumerate(seed_params):             
+                    model.seed_infect_by_idx( 
+                        ID = idxs[ inf_id[ ind_idx ] ], 
+                        strain_idx = strain_idx, 
+                        transmission_multiplier=transmission_multiplier
+                    )
             
             for time in range( model.c_params.end_time ):
                 model.one_time_step()
-    
+            
+            model.write_transmissions()
+            df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )
+            infected_per_strain_df = {f'strain{strain_idx}':[] for strain_idx in range(n_strains)}
+            max_time = model.c_params.end_time #df_trans.time_infected.max()
+            for time in range( max_time ):                
+                df_time = df_trans[(df_trans.time_infected==time) & (time<df_trans.time_susceptible)]
+                for strain_idx in range(n_strains):
+                    infected_per_strain_df[f'strain{strain_idx}'].append((df_time.strain_idx==strain_idx).sum())
+            infected_per_strain_df = pd.DataFrame(infected_per_strain_df)
+            infected_per_strain_df['time'] = range( max_time )
+            
+            infections.append(infected_per_strain_df)
             results.append(model.results)
             del model, params
         
         df = pd.concat(results, axis=0)
         df_dict = {agg_fn:df.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
+
+        # infections = pd.concat(infections, axis=0)
+        
+        # for rep in rng_seed_range:
+        #     for strain_idx in range(n_strains):
+        #         plt.plot(infections[rep-1][f'strain{strain_idx}'], c=color_list[strain_idx])
+        infections_df = pd.concat(infections, axis=0)
+        infections_dict = {agg_fn:infections_df.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
         
         # model.write_transmissions()
         # df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )  
         
-        return df_dict
+        return df_dict, infections_dict
+    
+    def plot_scenarios(field, df_dict_list, test_params, n_strains, n_seed_infections, 
+                       trans_mult, rng_seed_range, cross_immunity_labels ):
+        plt.figure()
+        for idx, (df_dict, infections_dict) in enumerate(df_dict_list):
+            x = df_dict['mean'].index
+            mean = df_dict['mean'][field]
+            sem = df_dict['sem'][field]
+            plt.plot(x, mean, label=cross_immunity_labels[idx], c=color_list[idx])
+            plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[idx], alpha=0.1)
+        plt.legend()
+        plt.xlabel('time')
+        plt.ylabel(field)
+        plt.title(f'n_strains:{n_strains}, seed infections:{",".join([str(x) for x in n_seed_infections])}\n'+ \
+                  ','.join([f'{k}:{v}' for k,v in test_params.items()]+
+                            [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']),
+                  fontsize=10)
+        plt.savefig(f'/Users/nbaya/Downloads/symmetric_cross_immunity.{field}.nstrains{n_strains}'+ \
+                    f'.seedinfect{"-".join([str(x) for x in n_seed_infections])}.n{test_params["n_total"]}.end{test_params["end_time"]}' + \
+                    f'infectrate{test_params["infectious_rate"]}.transmult{"-".join([str(x) for x in trans_mult])}.reps{len(rng_seed_range)}.png', dpi=300)
+    
+    
+    def plot_infections_by_strain(infections_dict, test_params, n_strains, 
+                                  n_seed_infections, trans_mult, rng_seed_range, 
+                                  label):
+        plt.figure()
+        for strain_idx  in range(n_strains):
+            x = infections_dict['mean'].index
+            mean = infections_dict['mean'][f'strain{strain_idx}']
+            sem = infections_dict['sem'][f'strain{strain_idx}']
+            plt.plot(x, mean, label=f'strain{strain_idx}', c=color_list[strain_idx])
+            plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[strain_idx], alpha=0.1)
+        plt.xlim([-1,test_params['end_time']-100])
+        plt.legend()
+        plt.xlabel('time')
+        plt.ylabel('infections caused by strain')
+        plt.title(label+f',n_strains:{n_strains}, seed infections:{",".join([str(x) for x in n_seed_infections])}\n'+ \
+                  ','.join([f'{k}:{v}' for k,v in test_params.items()]+
+                            [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']),
+                  fontsize=10)
+        plt.savefig(f'/Users/nbaya/Downloads/n_infected.{label}.nstrains{n_strains}'+ \
+                    f'.seedinfect{"-".join([str(x) for x in n_seed_infections])}.n{test_params["n_total"]}.end{test_params["end_time"]}' + \
+                    f'infectrate{test_params["infectious_rate"]}.transmult{"-".join([str(x) for x in trans_mult])}.reps{len(rng_seed_range)}.png', dpi=300)
     
     color_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
-    test_params = {'n_total':10000,
-                   'end_time': 200}
-    trans_mult = 0.5
-    cross_immunity_list = [[[1,1],[1,1]],
-                           [[1,0],[0,1]],
-                           [[1,1],[0,1]],
-                           [[1,0],[1,1]]]
-    rng_seed_range = range(1,51)
-    df_dict_list = [run_simulation( test_params, cross_immunity=cross_immunity, trans_mult=trans_mult, rng_seed_range=rng_seed_range)
-                    for cross_immunity in cross_immunity_list]    
-    field = 'total_infected'
-    for idx, df_dict in enumerate(df_dict_list):
-        x = df_dict['mean'].index
-        mean = df_dict['mean'][field]
-        sem = df_dict['sem'][field]
-        plt.plot(x, mean, label=str(cross_immunity_list[idx]), c=color_list[idx])
-        plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[idx], alpha=0.1)
-    plt.legend()
-    plt.xlabel('time')
-    plt.ylabel(field)
-    plt.title(', '.join([f'{k}:{v}' for k,v in test_params.items()]+
-                        [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']))
-    plt.savefig(f'/Users/nbaya/Downloads/cross_immunity.{field}.reps{len(rng_seed_range)}.transmult{trans_mult}.png', dpi=300)
+    
+    all_params = dict(test_params = dict(n_total = 10000,
+                                         end_time = 400,
+                                         infectious_rate = 5.18), # default 5.18
+                      n_strains         = 3,
+                      n_seed_infections = [6,6,6],
+                      trans_mult        = [1,1.5,1.5],
+                      rng_seed_range    = range(1,2))
+
+    full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
+    zero = np.identity(all_params['n_strains'])
+    half = np.full(shape=(all_params['n_strains'],all_params['n_strains']), fill_value=0.5)
+    np.fill_diagonal(half, 1)
+    # cross_immunity_list = [full,
+    #                        np.triu(full, 0),# half_prob,
+    #                        np.tril(full, 0),
+    #                        np.identity(n_strains)]
+    # cross_immunity_list = [full,
+    #                        half,
+    #                        zero]
+    cross_immunity_list = [full,
+                           half,
+                           zero,
+                           [[1, 0.5, 0.4],
+                            [0.5, 1, 0.4],
+                            [0.5, 0.5, 1]],
+                           [[1, 0.5, 0.75],
+                            [0.5, 1, 0.75],
+                            [0.5, 0.5, 1]]]
+    # cross_immunity_labels = ['full', 'half', 'zero']
+    # cross_immunity_labels = ['full', 'tri upper', 'tri lower', 'zero']
+    cross_immunity_labels = ['full', 'half', 'zero', 'strain2_0.4', 'strain2_0.75']
+    df_dict_list = []
+    for idx, cross_immunity in enumerate(cross_immunity_list):
+        df_dict, infections_dict = run_simulation(cross_immunity=cross_immunity, 
+                                                  **all_params)
+        df_dict_list.append((df_dict, infections_dict))
+        
+        plot_infections_by_strain(infections_dict=infections_dict,
+                                  label=cross_immunity_labels[idx],
+                                  **all_params)
+        
+    plot_scenarios(field='total_infected', 
+                   df_dict_list=df_dict_list, 
+                   cross_immunity_labels=cross_immunity_labels,
+                   **all_params)
+            
+
 
 def main():
     destroy()
