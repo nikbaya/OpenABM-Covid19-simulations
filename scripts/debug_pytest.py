@@ -11,11 +11,13 @@ Debug pytest failures
 import os, subprocess, shutil
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D # only used to make legend
 import re # only used during plotting
 from COVID19.parameters import ParameterSet
 
 OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
 PLOTS_DIR = '/Users/nbaya/Downloads'
+COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 os.chdir(OPENABM_DIR)
 from tests import constant
@@ -289,8 +291,8 @@ def test_cross_immunity( test_params = None ):
         
         total_seed_infections = sum(n_seed_infections)
         
-        results = []
-        infections = []
+        results_list = []
+        infections_list = []
         print(cross_immunity)
         for rng_seed in rng_seed_range:
             params = utils.get_params_swig()
@@ -322,41 +324,27 @@ def test_cross_immunity( test_params = None ):
             
             for time in range( model.c_params.end_time ):
                 model.one_time_step()
+
+            results_list.append(model.results)
             
             model.write_transmissions()
             df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )
             infected_per_strain_df = {f'strain{strain_idx}':[] for strain_idx in range(n_strains)}
             max_time = model.c_params.end_time #df_trans.time_infected.max()
-            for time in range( max_time ):                
+            for time in range( max_time+1 ): # infection events can occur from day 0 to the last day
                 # df_time = df_trans[(df_trans.time_infected<time) & (time<df_trans.time_susceptible)]
                 df_time = df_trans[(df_trans.time_infected==time)]
                 for strain_idx in range(n_strains):
                     infected_per_strain_df[f'strain{strain_idx}'].append((df_time.strain_idx==strain_idx).sum())
             infected_per_strain_df = pd.DataFrame(infected_per_strain_df)
-            infected_per_strain_df['time'] = range( max_time )
+            infected_per_strain_df['time'] = range( max_time+1 )
             
-            infections.append(infected_per_strain_df)
-            results.append(model.results)
+            infections_list.append(infected_per_strain_df)
             del model, params
         
-        df = pd.concat(results, axis=0)
-        df_dict = {agg_fn:df.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
-
-        # infections = pd.concat(infections, axis=0)
-        
-        # for rep in rng_seed_range:
-        #     for strain_idx in range(n_strains):
-        #         plt.plot(infections[rep-1][f'strain{strain_idx}'], c=color_list[strain_idx])
-        infections_df = pd.concat(infections, axis=0)
-        infections_dict = {agg_fn:infections_df.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
-        
-        # model.write_transmissions()
-        # df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )  
-        
-        return df_dict, infections_dict
+        return results_list, infections_list
     
     def print_sim_id(test_params, fname=False, **kwargs):
-
         test_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in test_params.items()])
         other_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in kwargs.items()])
         all_params_str = ','.join([test_params_str,other_params_str])
@@ -367,51 +355,71 @@ def test_cross_immunity( test_params = None ):
             all_params_str = all_params_str.replace(' ','-')
         return all_params_str
     
-    def plot_scenarios(field, df_dict_list, cross_immunity_labels, test_params, **kwargs ):
+    def plot_scenarios(field, cross_immunity_sims, cross_immunity_labels, test_params, agg=True, **kwargs ):
         plt.figure()
-        for idx, (df_dict, infections_dict) in enumerate(df_dict_list):
-            x = df_dict['mean'].index
-            mean = df_dict['mean'][field]
-            sem = df_dict['sem'][field]
-            plt.plot(x, mean, label=cross_immunity_labels[idx], c=color_list[idx])
-            plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[idx], alpha=0.1)
-        plt.legend()
+        for idx, (results_list, _) in enumerate(cross_immunity_sims):
+            if agg:
+                results = pd.concat(results_list, axis=0)
+                results_dict = {agg_fn:results.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
+                x = results_dict['mean'].index
+                mean = results_dict['mean'][field]
+                sem = results_dict['sem'][field]
+                plt.plot(x, mean, label=cross_immunity_labels[idx], c=COLORS[idx])
+                plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=COLORS[idx], alpha=0.1)
+            else:
+                plt.plot(results_list[0].time, pd.concat([results[field] for results in results_list],axis=1), c=COLORS[idx])
+        if agg:
+            plt.legend()
+        else:
+            custom_lines = [Line2D([0], [0], color=COLORS[i], lw=2) for i in range(len(cross_immunity_sims))]
+            plt.legend(custom_lines, [cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])
         plt.xlabel('time')
         plt.ylabel(field)
         title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, **kwargs)}'
         plt.title(title_str, fontsize=10)
-        fname = (f'cross_immunity_{"-".join([cross_immunity_labels[i] for i in range(len(df_dict_list))])}.'+
-                 field+f'.{print_sim_id(test_params, fname=True, **kwargs)}.png')
+        fname = (f'cross_immunity_{"-".join([cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])}.'+
+                 field+f'.{print_sim_id(test_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png')
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
-    def plot_infections_by_strain(infections_dict, label, test_params, **kwargs):
+    def plot_infections_by_strain(infections_list, label, test_params, agg=True, **kwargs):
+        if agg:
+            infections = pd.concat(infections_list, axis=0)
+            infections_dict = {agg_fn:infections.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
         plt.figure()
         for strain_idx  in range(n_strains):
-            x = infections_dict['mean'].index
-            mean = infections_dict['mean'][f'strain{strain_idx}']
-            sem = infections_dict['sem'][f'strain{strain_idx}']
-            plt.plot(x, mean, label=f'strain{strain_idx}', c=color_list[strain_idx])
-            plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[strain_idx], alpha=0.1)
+            if agg:
+                x = infections_dict['mean'].index
+                mean = infections_dict['mean'][f'strain{strain_idx}']
+                sem = infections_dict['sem'][f'strain{strain_idx}']
+                plt.plot(x, mean, label=f'strain{strain_idx}', c=COLORS[strain_idx])
+                plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=COLORS[strain_idx], alpha=0.1)
+            else:
+                 for rep_idx in range(len(kwargs['rng_seed_range'])): # rep_idx is not the same as rng_seed
+                     x = infections_list[rep_idx]['time']
+                     y = infections_list[rep_idx][f'strain{strain_idx}']
+                     plt.plot(x, y, c=COLORS[strain_idx], lw=1, alpha=0.5)
+        if agg:
+            plt.legend()
+        else:
+            custom_lines = [Line2D([0], [0], color=COLORS[i], lw=2) for i in range(n_strains)]
+            plt.legend(custom_lines, [f'strain{i}' for i in range(n_strains)])
         plt.xlim([-1,test_params['end_time']-50])
-        plt.legend()
         plt.xlabel('time')
         plt.ylabel('infections caused by strain')
         title_str = f'{label}\n{print_sim_id(test_params, **kwargs)}'
         plt.title(title_str, fontsize=10)
-        fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, fname=True, **kwargs)}.png'
+        fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png'
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
-    color_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
-
-    n_strains = 1
+    n_strains = 3
     all_params = dict(test_params = dict(n_total = 10000,
                                          end_time = 200,
-                                          # default 5.18
+                                         infectious_rate = 2 # default 5.18
                                          ), 
                       n_strains         = n_strains,
                       n_seed_infections = [int(12/n_strains)]*n_strains,
                       trans_mult        = [1]*n_strains,
-                      rng_seed_range    = range(1,50))
+                      rng_seed_range    = range(51,101))
 
     full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
     zero = np.identity(all_params['n_strains'])
@@ -436,20 +444,28 @@ def test_cross_immunity( test_params = None ):
     # cross_immunity_labels = ['full', 'half', 'zero']
     # cross_immunity_labels = ['full', 'tri upper', 'tri lower', 'zero']
     cross_immunity_labels = ['full', 'half', 'zero', 'strain2_0.4', 'strain2_0.75']
-    df_dict_list = []
+    cross_immunity_sims = []
     for idx, cross_immunity in enumerate(cross_immunity_list):
-        df_dict, infections_dict = run_simulation(cross_immunity=cross_immunity, 
-                                                  **all_params)
-        df_dict_list.append((df_dict, infections_dict))
-        
-        plot_infections_by_strain(infections_dict=infections_dict,
+        results_list, infections_list = run_simulation(cross_immunity=cross_immunity, 
+                                                       **all_params)
+        cross_immunity_sims.append((results_list, infections_list))
+        plot_infections_by_strain(infections_list=infections_list,
                                   label=cross_immunity_labels[idx],
                                   **all_params)
+        plot_infections_by_strain(infections_list=infections_list,
+                                  label=cross_immunity_labels[idx],
+                                  agg=False,
+                                  **all_params)
     
-    for field in ['total_infected', 'R_inst']:
+    for field in ['total_infected']:
         plot_scenarios(field=field, 
-                       df_dict_list=df_dict_list, 
+                       cross_immunity_sims=cross_immunity_sims, 
                        cross_immunity_labels=cross_immunity_labels,
+                       **all_params)
+        plot_scenarios(field=field, 
+                       cross_immunity_sims=cross_immunity_sims, 
+                       cross_immunity_labels=cross_immunity_labels,
+                       agg=False,
                        **all_params)
     
             
