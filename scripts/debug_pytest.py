@@ -15,8 +15,13 @@ from matplotlib.lines import Line2D # only used to make legend
 import re # only used during plotting
 from COVID19.parameters import ParameterSet
 
-OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
-PLOTS_DIR = '/Users/nbaya/Downloads'
+if os.path.isdir('/Users/nbaya'):
+    OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
+    PLOTS_DIR = '/Users/nbaya/Downloads'
+else:
+    OPENABM_DIR = '/well/fraser/users/liu380/OpenABM-Covid19'
+    PLOTS_DIR = '/well/fraser/users/liu380/OpenABM-Covid19-simulations/plots'
+
 COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 os.chdir(OPENABM_DIR)
@@ -285,7 +290,7 @@ def test_custom_occupation_network( self, test_params, rng_seed_range=range(1,2)
             rtol = 0.02
             np.testing.assert_allclose(actual,expected,rtol=rtol,err_msg="Expected mean unique occupational contacts over multiple days not as expected")
 
-def test_cross_immunity( test_params = None ):
+def test_cross_immunity():
     def run_simulation( test_params, cross_immunity, trans_mult, n_seed_infections, 
                        n_strains, rng_seed_range=range(1,11) ):
         
@@ -367,7 +372,8 @@ def test_cross_immunity( test_params = None ):
                 plt.plot(x, mean, label=cross_immunity_labels[idx], c=COLORS[idx])
                 plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=COLORS[idx], alpha=0.1)
             else:
-                plt.plot(results_list[0].time, pd.concat([results[field] for results in results_list],axis=1), c=COLORS[idx])
+                plt.plot(results_list[0].time, pd.concat([results[field] for results in results_list],axis=1), 
+                         c=COLORS[idx], lw=1, alpha=0.5)
         if agg:
             plt.legend()
         else:
@@ -413,13 +419,13 @@ def test_cross_immunity( test_params = None ):
     
     n_strains = 3
     all_params = dict(test_params = dict(n_total = 10000,
-                                         end_time = 200,
+                                         end_time = 400,
                                          infectious_rate = 2 # default 5.18
                                          ), 
                       n_strains         = n_strains,
                       n_seed_infections = [int(12/n_strains)]*n_strains,
                       trans_mult        = [1]*n_strains,
-                      rng_seed_range    = range(51,101))
+                      rng_seed_range    = range(1,2))
 
     full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
     zero = np.identity(all_params['n_strains'])
@@ -468,28 +474,28 @@ def test_cross_immunity( test_params = None ):
                        agg=False,
                        **all_params)
     
-            
-
-
 def main():
     destroy()
     set_up()
     
-    kwargs = test_infection_dynamics.TestClass.params['test_monoton_mild_infectious_factor'][0].copy()
-    test_monoton_mild_infectious_factor(self=test_infection_dynamics.TestClass, **kwargs)
+    test_cross_immunity()
+    # kwargs = test_infection_dynamics.TestClass.params['test_monoton_mild_infectious_factor'][0].copy()
+    # test_monoton_mild_infectious_factor(self=test_infection_dynamics.TestClass, **kwargs)
     
-    kwargs = test_infection_dynamics.TestClass.params['test_infectiousness_multiplier'][0].copy()
-    test_infectiousness_multiplier(self=test_infection_dynamics.TestClass, **kwargs)
+    # kwargs = test_infection_dynamics.TestClass.params['test_infectiousness_multiplier'][0].copy()
+    # test_infectiousness_multiplier(self=test_infection_dynamics.TestClass, **kwargs)
     
-    kwargs = test_network.TestClass.params['test_custom_occupation_network'].copy()
-    test_params_list = [x['test_params'] for x in kwargs]
-    for rng_seed in range(1,21):
-        print(f'rng_seed: {rng_seed}')
-        # for idx, test_params in enumerate(test_params_list, 1):
-        test_params = test_params_list[-1]
-        test_params['rng_seed'] = rng_seed
-        test_custom_occupation_network(self=test_network.TestClass, test_params=test_params)        
-
+    # kwargs = test_network.TestClass.params['test_custom_occupation_network'].copy()
+    # test_params_list = [x['test_params'] for x in kwargs]
+    # for rng_seed in range(1,21):
+    #     print(f'rng_seed: {rng_seed}')
+    #     # for idx, test_params in enumerate(test_params_list, 1):
+    #     test_params = test_params_list[-1]
+    #     test_params['rng_seed'] = rng_seed
+    #     test_custom_occupation_network(self=test_network.TestClass, test_params=test_params)        
     
         
     destroy()
+
+if __name__=='__main__':
+    main()
