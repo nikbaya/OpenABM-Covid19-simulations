@@ -11,9 +11,11 @@ Debug pytest failures
 import os, subprocess, shutil
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
+import re # only used during plotting
 from COVID19.parameters import ParameterSet
 
 OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
+PLOTS_DIR = '/Users/nbaya/Downloads'
 
 os.chdir(OPENABM_DIR)
 from tests import constant
@@ -326,7 +328,8 @@ def test_cross_immunity( test_params = None ):
             infected_per_strain_df = {f'strain{strain_idx}':[] for strain_idx in range(n_strains)}
             max_time = model.c_params.end_time #df_trans.time_infected.max()
             for time in range( max_time ):                
-                df_time = df_trans[(df_trans.time_infected==time) & (time<df_trans.time_susceptible)]
+                # df_time = df_trans[(df_trans.time_infected<time) & (time<df_trans.time_susceptible)]
+                df_time = df_trans[(df_trans.time_infected==time)]
                 for strain_idx in range(n_strains):
                     infected_per_strain_df[f'strain{strain_idx}'].append((df_time.strain_idx==strain_idx).sum())
             infected_per_strain_df = pd.DataFrame(infected_per_strain_df)
@@ -352,8 +355,19 @@ def test_cross_immunity( test_params = None ):
         
         return df_dict, infections_dict
     
-    def plot_scenarios(field, df_dict_list, test_params, n_strains, n_seed_infections, 
-                       trans_mult, rng_seed_range, cross_immunity_labels ):
+    def print_sim_id(test_params, fname=False, **kwargs):
+
+        test_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in test_params.items()])
+        other_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in kwargs.items()])
+        all_params_str = ','.join([test_params_str,other_params_str])
+        all_params_str = all_params_str.replace('range','')
+        if fname:
+            chars_to_remove = [':',',','\(','\)','\[','\]']
+            all_params_str = re.sub('|'.join(chars_to_remove), "", all_params_str)
+            all_params_str = all_params_str.replace(' ','-')
+        return all_params_str
+    
+    def plot_scenarios(field, df_dict_list, cross_immunity_labels, test_params, **kwargs ):
         plt.figure()
         for idx, (df_dict, infections_dict) in enumerate(df_dict_list):
             x = df_dict['mean'].index
@@ -364,18 +378,13 @@ def test_cross_immunity( test_params = None ):
         plt.legend()
         plt.xlabel('time')
         plt.ylabel(field)
-        plt.title(f'n_strains:{n_strains}, seed infections:{",".join([str(x) for x in n_seed_infections])}\n'+ \
-                  ','.join([f'{k}:{v}' for k,v in test_params.items()]+
-                            [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']),
-                  fontsize=10)
-        plt.savefig(f'/Users/nbaya/Downloads/symmetric_cross_immunity.{field}.nstrains{n_strains}'+ \
-                    f'.seedinfect{"-".join([str(x) for x in n_seed_infections])}.n{test_params["n_total"]}.end{test_params["end_time"]}' + \
-                    f'infectrate{test_params["infectious_rate"]}.transmult{"-".join([str(x) for x in trans_mult])}.reps{len(rng_seed_range)}.png', dpi=300)
+        title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, **kwargs)}'
+        plt.title(title_str, fontsize=10)
+        fname = (f'cross_immunity_{"-".join([cross_immunity_labels[i] for i in range(len(df_dict_list))])}.'+
+                 field+f'.{print_sim_id(test_params, fname=True, **kwargs)}.png')
+        plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
-    
-    def plot_infections_by_strain(infections_dict, test_params, n_strains, 
-                                  n_seed_infections, trans_mult, rng_seed_range, 
-                                  label):
+    def plot_infections_by_strain(infections_dict, label, test_params, **kwargs):
         plt.figure()
         for strain_idx  in range(n_strains):
             x = infections_dict['mean'].index
@@ -383,27 +392,26 @@ def test_cross_immunity( test_params = None ):
             sem = infections_dict['sem'][f'strain{strain_idx}']
             plt.plot(x, mean, label=f'strain{strain_idx}', c=color_list[strain_idx])
             plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=color_list[strain_idx], alpha=0.1)
-        plt.xlim([-1,test_params['end_time']-100])
+        plt.xlim([-1,test_params['end_time']-50])
         plt.legend()
         plt.xlabel('time')
         plt.ylabel('infections caused by strain')
-        plt.title(label+f',n_strains:{n_strains}, seed infections:{",".join([str(x) for x in n_seed_infections])}\n'+ \
-                  ','.join([f'{k}:{v}' for k,v in test_params.items()]+
-                            [f'transmission_mult:{trans_mult}',f'reps:{len(rng_seed_range)}']),
-                  fontsize=10)
-        plt.savefig(f'/Users/nbaya/Downloads/n_infected.{label}.nstrains{n_strains}'+ \
-                    f'.seedinfect{"-".join([str(x) for x in n_seed_infections])}.n{test_params["n_total"]}.end{test_params["end_time"]}' + \
-                    f'infectrate{test_params["infectious_rate"]}.transmult{"-".join([str(x) for x in trans_mult])}.reps{len(rng_seed_range)}.png', dpi=300)
+        title_str = f'{label}\n{print_sim_id(test_params, **kwargs)}'
+        plt.title(title_str, fontsize=10)
+        fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, fname=True, **kwargs)}.png'
+        plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
     color_list = plt.rcParams['axes.prop_cycle'].by_key()['color']
-    
+
+    n_strains = 1
     all_params = dict(test_params = dict(n_total = 10000,
-                                         end_time = 400,
-                                         infectious_rate = 5.18), # default 5.18
-                      n_strains         = 3,
-                      n_seed_infections = [6,6,6],
-                      trans_mult        = [1,1.5,1.5],
-                      rng_seed_range    = range(1,2))
+                                         end_time = 200,
+                                          # default 5.18
+                                         ), 
+                      n_strains         = n_strains,
+                      n_seed_infections = [int(12/n_strains)]*n_strains,
+                      trans_mult        = [1]*n_strains,
+                      rng_seed_range    = range(1,50))
 
     full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
     zero = np.identity(all_params['n_strains'])
@@ -418,13 +426,13 @@ def test_cross_immunity( test_params = None ):
     #                        zero]
     cross_immunity_list = [full,
                            half,
-                           zero,
-                           [[1, 0.5, 0.4],
-                            [0.5, 1, 0.4],
-                            [0.5, 0.5, 1]],
-                           [[1, 0.5, 0.75],
-                            [0.5, 1, 0.75],
-                            [0.5, 0.5, 1]]]
+                           zero,]
+                           # [[1, 0.5, 0.4],
+                           #  [0.5, 1, 0.4],
+                           #  [0.5, 0.5, 1]],
+                           # [[1, 0.5, 0.75],
+                           #  [0.5, 1, 0.75],
+                           #  [0.5, 0.5, 1]]]
     # cross_immunity_labels = ['full', 'half', 'zero']
     # cross_immunity_labels = ['full', 'tri upper', 'tri lower', 'zero']
     cross_immunity_labels = ['full', 'half', 'zero', 'strain2_0.4', 'strain2_0.75']
@@ -437,11 +445,13 @@ def test_cross_immunity( test_params = None ):
         plot_infections_by_strain(infections_dict=infections_dict,
                                   label=cross_immunity_labels[idx],
                                   **all_params)
-        
-    plot_scenarios(field='total_infected', 
-                   df_dict_list=df_dict_list, 
-                   cross_immunity_labels=cross_immunity_labels,
-                   **all_params)
+    
+    for field in ['total_infected', 'R_inst']:
+        plot_scenarios(field=field, 
+                       df_dict_list=df_dict_list, 
+                       cross_immunity_labels=cross_immunity_labels,
+                       **all_params)
+    
             
 
 
