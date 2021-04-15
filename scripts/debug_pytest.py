@@ -342,9 +342,13 @@ def test_cross_immunity():
                                                zip(mid_sim_infect_params['infection_start_time'],
                                                    mid_sim_infect_params['infection_end_time'],
                                                    mid_sim_infect_params['n_infections_per_day'])]
-                    infect_with_strains(model=model, 
-                                        n_infections_per_strain=n_infections_per_strain, 
-                                        trans_mult=trans_mult)
+                    try:
+                        infect_with_strains(model=model, 
+                                            n_infections_per_strain=n_infections_per_strain, 
+                                            trans_mult=trans_mult)
+                    except:
+                        print(f'time: {time}')
+                        assert False
 
             results_list.append(model.results)
             
@@ -439,18 +443,20 @@ def test_cross_immunity():
         fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, mid_sim_infect_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png'
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
-    for infectious_rate in [1,2,3,4]:
-        n_strains = 2
+
+    n_strains = 3
+    
+    for trans_mult in [[1,1.5,2]]:
         all_params = dict(test_params = dict(n_total = 10000,
-                                             end_time = 200, 
+                                             end_time = 350, 
                                              ), # default infectious_rate: 5.18
                           n_strains         = n_strains,
-                          n_seed_infections = [0,0],
-                          trans_mult        = [1]*n_strains,
-                          rng_seed_range    = range(1,51),
-                          mid_sim_infect_params = dict(infection_start_time = [50]*n_strains,
-                                                       infection_end_time = [50]*n_strains,
-                                                       n_infections_per_day = [int(12/n_strains)]*n_strains))
+                          n_seed_infections = [6,0,0],
+                          trans_mult        = trans_mult,
+                          rng_seed_range    = range(51,101),
+                          mid_sim_infect_params = dict(infection_start_time = [0, 100, 100],
+                                                       infection_end_time   = [0, np.inf, np.inf],
+                                                       n_infections_per_day = [0, 1, 1]))
     
         full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
         zero = np.identity(all_params['n_strains'])
