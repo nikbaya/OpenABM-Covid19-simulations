@@ -25,6 +25,7 @@ else:
 COLORS = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
 os.chdir(OPENABM_DIR)
+import covid19
 from tests import constant
 from tests import utilities as utils
 from tests import test_infection_dynamics
@@ -328,43 +329,45 @@ def test_cross_immunity():
             params.set_param( 'n_seed_infection', 0 ) # manually seed infections for each strain later
             model  = utils.get_model_swig( params )
             model.set_cross_immunity_matrix(cross_immunity)
+            for strain_idx in range(1,n_strains): # skip first strain, which has already been initialised
+                covid19.initialise_strain(model.c_model, strain_idx, trans_mult[strain_idx]) # need to initialise all strains up front to be able to set recovery time using cross immunity
             np.random.seed(model.c_params.rng_seed)
-        
-            infect_with_strains(model=model, 
-                                n_infections_per_strain=n_seed_infections, 
-                                trans_mult=trans_mult)
+            try:
             
-            for time in range( model.c_params.end_time ):
-                model.one_time_step()
-                if mid_sim_infect_params is not None:
-                    n_infections_per_strain = [n*(time>=start_time)*(time<=end_time) 
-                                               for start_time, end_time, n in 
-                                               zip(mid_sim_infect_params['infection_start_time'],
-                                                   mid_sim_infect_params['infection_end_time'],
-                                                   mid_sim_infect_params['n_infections_per_day'])]
-                    try:
+                infect_with_strains(model=model, 
+                                    n_infections_per_strain=n_seed_infections, 
+                                    trans_mult=trans_mult)
+                
+                for time in range( model.c_params.end_time ):
+                    model.one_time_step()
+                    if mid_sim_infect_params is not None:
+                        n_infections_per_strain = [n*(time>=start_time)*(time<=end_time) 
+                                                   for start_time, end_time, n in 
+                                                   zip(mid_sim_infect_params['infection_start_time'],
+                                                       mid_sim_infect_params['infection_end_time'],
+                                                       mid_sim_infect_params['n_infections_per_day'])]
+                        
                         infect_with_strains(model=model, 
                                             n_infections_per_strain=n_infections_per_strain, 
                                             trans_mult=trans_mult)
-                    except:
-                        print(f'time: {time}')
-                        assert False
-
-            results_list.append(model.results)
-            
-            model.write_transmissions()
-            df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )
-            infected_per_strain_df = {f'strain{strain_idx}':[] for strain_idx in range(n_strains)}
-            max_time = model.c_params.end_time #df_trans.time_infected.max()
-            for time in range( max_time+1 ): # infection events can occur from day 0 to the last day
-                # df_time = df_trans[(df_trans.time_infected<time) & (time<df_trans.time_susceptible)]
-                df_time = df_trans[(df_trans.time_infected==time)]
-                for strain_idx in range(n_strains):
-                    infected_per_strain_df[f'strain{strain_idx}'].append((df_time.strain_idx==strain_idx).sum())
-            infected_per_strain_df = pd.DataFrame(infected_per_strain_df)
-            infected_per_strain_df['time'] = range( max_time+1 )
-            
-            infections_list.append(infected_per_strain_df)
+    
+                results_list.append(model.results)
+                
+                model.write_transmissions()
+                df_trans = pd.read_csv( constant.TEST_TRANSMISSION_FILE, comment="#", sep=",", skipinitialspace=True )
+                infected_per_strain_df = {f'strain{strain_idx}':[] for strain_idx in range(n_strains)}
+                max_time = model.c_params.end_time #df_trans.time_infected.max()
+                for time in range( max_time+1 ): # infection events can occur from day 0 to the last day
+                    # df_time = df_trans[(df_trans.time_infected<time) & (time<df_trans.time_susceptible)]
+                    df_time = df_trans[(df_trans.time_infected==time)]
+                    for strain_idx in range(n_strains):
+                        infected_per_strain_df[f'strain{strain_idx}'].append((df_time.strain_idx==strain_idx).sum())
+                infected_per_strain_df = pd.DataFrame(infected_per_strain_df)
+                infected_per_strain_df['time'] = range( max_time+1 )
+                
+                infections_list.append(infected_per_strain_df)
+            except:
+                print(f'failed rng_seed={rng_seed}, time={time}')
             del model, params
         
         return results_list, infections_list
@@ -408,7 +411,7 @@ def test_cross_immunity():
         plt.xlabel('time')
         plt.ylabel(field)
         title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, mid_sim_infect_params, **kwargs)}'
-        plt.title(title_str, fontsize=10)
+        plt.title(title_str, fontsize=10 if mid_sim_infect_params is None else 5)
         fname = (f'cross_immunity_{"-".join([cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])}.'+
                  field+f'.{print_sim_id(test_params, mid_sim_infect_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png')
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
@@ -426,7 +429,7 @@ def test_cross_immunity():
                 plt.plot(x, mean, label=f'strain{strain_idx}', c=COLORS[strain_idx])
                 plt.fill_between(x, y1=mean-1.96*sem, y2=mean+1.96*sem, color=COLORS[strain_idx], alpha=0.1)
             else:
-                 for rep_idx in range(len(kwargs['rng_seed_range'])): # rep_idx is not the same as rng_seed
+                 for rep_idx in range(len(infections_list)):#range(len(kwargs['rng_seed_range'])): # rep_idx is not the same as rng_seed
                      x = infections_list[rep_idx]['time']
                      y = infections_list[rep_idx][f'strain{strain_idx}']
                      plt.plot(x, y, c=COLORS[strain_idx], lw=1, alpha=0.5)
@@ -439,48 +442,59 @@ def test_cross_immunity():
         plt.xlabel('time')
         plt.ylabel('infections caused by strain')
         title_str = f'{label}\n{print_sim_id(test_params, mid_sim_infect_params, **kwargs)}'
-        plt.title(title_str, fontsize=10)
+        plt.title(title_str, fontsize=10 if mid_sim_infect_params is None else 5)
         fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, mid_sim_infect_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png'
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
 
-    n_strains = 3
-    
-    for trans_mult in [[1,1.5,2]]:
+    n_strains = 6
+    for trans_mult in [
+            [1+0.2*strain_idx for strain_idx in range(n_strains)],
+            [1]*n_strains, 
+                       ]:
         all_params = dict(test_params = dict(n_total = 10000,
-                                             end_time = 350, 
-                                             ), # default infectious_rate: 5.18
+                                             end_time = 400, 
+                                             infectious_rate=3), # default infectious_rate: 5.18
                           n_strains         = n_strains,
-                          n_seed_infections = [6,0,0],
+                          n_seed_infections = [0]*n_strains,
                           trans_mult        = trans_mult,
-                          rng_seed_range    = range(51,101),
-                          mid_sim_infect_params = dict(infection_start_time = [0, 100, 100],
-                                                       infection_end_time   = [0, np.inf, np.inf],
-                                                       n_infections_per_day = [0, 1, 1]))
+                          rng_seed_range    = range(1,51),
+                          mid_sim_infect_params = dict(infection_start_time = [50*strain_idx for strain_idx in range(n_strains)],
+                                                       infection_end_time   = [np.inf]*n_strains,
+                                                       n_infections_per_day = [1]*n_strains))
     
         full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
         zero = np.identity(all_params['n_strains'])
         half = np.full(shape=(all_params['n_strains'],all_params['n_strains']), fill_value=0.5)
         np.fill_diagonal(half, 1)
-        cross_immunity_list = [full,
-                                half,
-                                zero]
+        # cross_immunity_list = [full,
+        #                         half,
+        #                         zero]
         # cross_immunity_list = [full,
         #                         np.triu(full, 0),# half_prob,
         #                         np.tril(full, 0),
         #                         zero]
         # cross_immunity_list = [full,
-        #                        half,
-        #                        zero,]
-                               # [[1, 0.5, 0.4],
-                               #  [0.5, 1, 0.4],
-                               #  [0.5, 0.5, 1]],
-                               # [[1, 0.5, 0.75],
-                               #  [0.5, 1, 0.75],
-                               #  [0.5, 0.5, 1]]]
-        cross_immunity_labels = ['full', 'half', 'zero']
+        #                         half,
+        #                         zero,
+        #                         [[1, 0.5, 0.4],
+        #                          [0.5, 1, 0.4],
+        #                          [0.5, 0.5, 1]],
+        #                         [[1, 0.5, 0.75],
+        #                          [0.5, 1, 0.75],
+        #                          [0.5, 0.5, 1]]]
+        cross_immunity_list = [full,
+                               half, 
+                               zero, 
+                               [[round(1-0.1*abs(i-j),2) for j in range(n_strains)] 
+                                for i in range(n_strains)],
+                               [[round(1-0.2*abs(i-j),2) for j in range(n_strains)] 
+                                for i in range(n_strains)]]
+        # cross_immunity_labels = ['full', 'half', 'zero']
         # cross_immunity_labels = ['full', 'tri upper', 'tri lower', 'zero']
         # cross_immunity_labels = ['full', 'half', 'zero', 'strain2_0.4', 'strain2_0.75']
+        cross_immunity_labels = ['full','half', 'zero', 'diverge0.1', 'diverge0.2']
+        
         cross_immunity_sims = []
         for idx, cross_immunity in enumerate(cross_immunity_list):
             results_list, infections_list = run_simulation(cross_immunity=cross_immunity, 
@@ -489,21 +503,25 @@ def test_cross_immunity():
             plot_infections_by_strain(infections_list=infections_list,
                                       label=cross_immunity_labels[idx],
                                       **all_params)
+            plt.close()
             plot_infections_by_strain(infections_list=infections_list,
                                       label=cross_immunity_labels[idx],
                                       agg=False,
                                       **all_params)
+            plt.close()
         
         for field in ['total_infected']:
             plot_scenarios(field=field, 
                            cross_immunity_sims=cross_immunity_sims, 
                            cross_immunity_labels=cross_immunity_labels,
                            **all_params)
+            plt.close()
             plot_scenarios(field=field, 
                            cross_immunity_sims=cross_immunity_sims, 
                            cross_immunity_labels=cross_immunity_labels,
                            agg=False,
                            **all_params)
+            plt.close()
     
 def main():
     destroy()
