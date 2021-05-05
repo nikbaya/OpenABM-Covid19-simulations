@@ -11,9 +11,13 @@ Debug pytest failures
 import os, subprocess, shutil
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from matplotlib.lines import Line2D # only used to make legend
 import re # only used during plotting
+from math import ceil, floor # only used for plotting
+
 from COVID19.parameters import ParameterSet
+from COVID19.model import VaccineSchedule
 
 if os.path.isdir('/Users/nbaya'):
     OPENABM_DIR = '/Users/nbaya/gms/fraser_lab/OpenABM-Covid19'
@@ -291,32 +295,54 @@ def test_custom_occupation_network( self, test_params, rng_seed_range=range(1,2)
             rtol = 0.02
             np.testing.assert_allclose(actual,expected,rtol=rtol,err_msg="Expected mean unique occupational contacts over multiple days not as expected")
 
+def infect_with_strains(model, n_infections_per_strain, trans_mult):
+    if sum(n_infections_per_strain)==0: # if no infections, do nothing
+        return
+    n_strains = len(n_infections_per_strain)
+    total_strain_infections = sum(n_infections_per_strain)
+    
+    model.write_individual_file()
+    df_indiv = pd.read_csv( constant.TEST_INDIVIDUAL_FILE, comment="#", sep=",", skipinitialspace=True )
+    idxs     = df_indiv[ df_indiv[ "current_status" ] == constant.EVENT_TYPES.SUSCEPTIBLE.value ]['ID'].to_numpy()
+    n_susc   = len( idxs )
+    inf_id = np.random.choice( n_susc, total_strain_infections, replace=False) # individuals to infect
+    infect_params = [(strain_idx, trans_mult[strain_idx]) 
+                   for strain_idx in range(n_strains) 
+                   for infection_idx in range(n_infections_per_strain[strain_idx])] # parameter tuples for each infection
+    
+    for ind_idx, (strain_idx, transmission_multiplier) in enumerate(infect_params):
+        model.seed_infect_by_idx( 
+            ID = idxs[ inf_id[ ind_idx ] ], 
+            strain_idx = strain_idx, 
+            transmission_multiplier=transmission_multiplier
+        )
+        
+def print_sim_id(test_params, mid_sim_infect_params = None, vaccine_params = None,
+                 fname=False, **kwargs):
+    test_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in test_params.items()])
+    kwarg_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in kwargs.items()])
+    strs_to_join = [test_params_str, kwarg_params_str]
+    for other_params in [mid_sim_infect_params, vaccine_params]:
+        if other_params is not None:
+            other_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in other_params.items()])
+            if not fname: 
+                other_params_str = '\n'+other_params_str
+            strs_to_join.append(other_params_str)            
+    all_params_str = ','.join(strs_to_join)
+    all_params_str = all_params_str.replace('range','')
+    if fname:
+        chars_to_remove = [':',',','\(','\)','\[','\]']
+        all_params_str = re.sub('|'.join(chars_to_remove), "", all_params_str)
+        all_params_str = all_params_str.replace(' ','-')
+    else:
+        all_params_str = all_params_str.replace(' ','')
+    return all_params_str
+
 def test_cross_immunity():
-    def infect_with_strains(model, n_infections_per_strain, trans_mult):
-        if sum(n_infections_per_strain)==0: # if no infections, do nothing
-            return
-        n_strains = len(n_infections_per_strain)
-        total_strain_infections = sum(n_infections_per_strain)
-        
-        model.write_individual_file()
-        df_indiv = pd.read_csv( constant.TEST_INDIVIDUAL_FILE, comment="#", sep=",", skipinitialspace=True )
-        idxs     = df_indiv[ df_indiv[ "current_status" ] == constant.EVENT_TYPES.SUSCEPTIBLE.value ]['ID'].to_numpy()
-        n_susc   = len( idxs )
-        inf_id = np.random.choice( n_susc, total_strain_infections, replace=False) # individuals to infect
-        infect_params = [(strain_idx, trans_mult[strain_idx]) 
-                       for strain_idx in range(n_strains) 
-                       for infection_idx in range(n_infections_per_strain[strain_idx])] # parameter tuples for each infection
-        
-        for ind_idx, (strain_idx, transmission_multiplier) in enumerate(infect_params):
-            model.seed_infect_by_idx( 
-                ID = idxs[ inf_id[ ind_idx ] ], 
-                strain_idx = strain_idx, 
-                transmission_multiplier=transmission_multiplier
-            )
     
     def run_simulation( test_params, cross_immunity, trans_mult, n_seed_infections, 
-                       n_strains, rng_seed_range, mid_sim_infect_params = None):
-        
+                       n_strains, rng_seed_range, mid_sim_infect_params = None,
+                       vaccine_params = None):
         results_list = []
         infections_list = []
         print(cross_immunity)
@@ -324,14 +350,24 @@ def test_cross_immunity():
             params = utils.get_params_swig()
             if test_params is not None:
                 for param, value in test_params.items():
-                    params.set_param( param, value )  
+                    params.set_param( param, value )
             params.set_param( 'rng_seed', rng_seed )
             params.set_param( 'n_seed_infection', 0 ) # manually seed infections for each strain later
             model  = utils.get_model_swig( params )
             model.set_cross_immunity_matrix(cross_immunity)
-            for strain_idx in range(1,n_strains): # skip first strain, which has already been initialised
-                covid19.initialise_strain(model.c_model, strain_idx, trans_mult[strain_idx]) # need to initialise all strains up front to be able to set recovery time using cross immunity
+            # if rho is not None:
+            #     covid19.set_up_cross_immunity_draws(model.c_model, rho)
+            for strain_idx in range(0,n_strains): 
+                try:
+                    covid19.initialise_strain(model.c_model, strain_idx, trans_mult[strain_idx]) # need to initialise all strains up front to be able to set recovery time using cross immunity
+                except:
+                    print('Failed to initialise strain{strain_idx}')
             np.random.seed(model.c_params.rng_seed)
+            
+            if vaccine_params is not None:
+                vaccine_schedule = VaccineSchedule(**vaccine_params)
+                model.vaccinate_schedule(vaccine_schedule)
+            
             try:
             
                 infect_with_strains(model=model, 
@@ -372,24 +408,31 @@ def test_cross_immunity():
         
         return results_list, infections_list
     
-    def print_sim_id(test_params, mid_sim_infect_params = None, fname=False, **kwargs):
-        test_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in test_params.items()])
-        other_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in kwargs.items()])
-        strs_to_join = [test_params_str, other_params_str]
-        if mid_sim_infect_params is not None:
-            mid_sim_infect_params_str = ','.join([''.join([f[0] for f in k.split('_')])+':'+str(v) for k,v in mid_sim_infect_params.items()])
-            strs_to_join.append(mid_sim_infect_params_str)
-        all_params_str = ','.join(strs_to_join)
-        all_params_str = all_params_str.replace('range','')
-        if fname:
-            chars_to_remove = [':',',','\(','\)','\[','\]']
-            all_params_str = re.sub('|'.join(chars_to_remove), "", all_params_str)
-            all_params_str = all_params_str.replace(' ','-')
-        else:
-            all_params_str = all_params_str.replace(' ','')
-        return all_params_str
+    def run_vaccine_sim( test_params ):
+        params = utils.get_params_swig()
+        if test_params is not None:
+            for param, value in test_params.items():
+                params.set_param( param, value )
+        model  = utils.get_model_swig( params )
+        vaccine_params = dict(frac_50_59 = 0,
+                              frac_60_69 = 0,
+                              frac_70_79=1, 
+                              frac_80 = 1,
+                              efficacy = 0)
+        
+        for time in range( model.c_params.end_time ):
+            model.one_time_step()
+        for age_group in [k for k in vaccine_params if 'frac_' in k]:
+            age_group = age_group.replace('frac_','')
+            plt.plot(model.results.time, model.results[f'total_infected_{age_group}'], label=age_group)
+        plt.legend()
+        plt.xlabel('time')
+        plt.ylabel('total_infected')
+        del params, model
     
-    def plot_scenarios(field, cross_immunity_sims, cross_immunity_labels, test_params, mid_sim_infect_params, agg=True, **kwargs ):
+    
+    def plot_scenarios(field, cross_immunity_sims, cross_immunity_labels, test_params, 
+                       mid_sim_infect_params, vaccine_params, agg=True, **kwargs ):
         plt.figure()
         for idx, (results_list, _) in enumerate(cross_immunity_sims):
             if agg:
@@ -410,13 +453,14 @@ def test_cross_immunity():
             plt.legend(custom_lines, [cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])
         plt.xlabel('time')
         plt.ylabel(field)
-        title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, mid_sim_infect_params, **kwargs)}'
-        plt.title(title_str, fontsize=10 if mid_sim_infect_params is None else 5)
-        fname = (f'cross_immunity_{"-".join([cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])}.'+
-                 field+f'.{print_sim_id(test_params, mid_sim_infect_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png')
+        title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, **kwargs)}'
+        plt.title(title_str, fontsize=10 if all([arg is None for arg in [mid_sim_infect_params, vaccine_params]]) else 5)
+        fname = (f'cross_immunity_v3_{"-".join([cross_immunity_labels[i] for i in range(len(cross_immunity_sims))])}.'+
+                 field+f'.{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png')
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
-    def plot_infections_by_strain(infections_list, label, test_params, mid_sim_infect_params, agg=True, **kwargs):
+    def plot_infections_by_strain(infections_list, label, test_params, mid_sim_infect_params, 
+                                  vaccine_params, agg=True, **kwargs):
         if agg:
             infections = pd.concat(infections_list, axis=0)
             infections_dict = {agg_fn:infections.groupby(by='time').agg(agg_fn) for agg_fn in ['mean', 'sem']}
@@ -438,91 +482,244 @@ def test_cross_immunity():
         else:
             custom_lines = [Line2D([0], [0], color=COLORS[i], lw=2) for i in range(n_strains)]
             plt.legend(custom_lines, [f'strain{i}' for i in range(n_strains)])
-        plt.xlim([-1,test_params['end_time']-50])
+        plt.xlim([-1, max(50, test_params['end_time']-50)])
         plt.xlabel('time')
         plt.ylabel('infections caused by strain')
-        title_str = f'{label}\n{print_sim_id(test_params, mid_sim_infect_params, **kwargs)}'
-        plt.title(title_str, fontsize=10 if mid_sim_infect_params is None else 5)
-        fname = f'n_infected_per_strain.{label}.{print_sim_id(test_params, mid_sim_infect_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png'
+        title_str = f'{label}\n{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, **kwargs)}'
+        plt.title(title_str, fontsize=10 if all([arg is None for arg in [mid_sim_infect_params, vaccine_params]]) else 5)
+        fname = f'n_infected_per_strain_v3.{label}.{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, fname=True, **kwargs)}{"" if agg else ".not_agg"}.png'
+        plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
+        
+    def stacked_bar_plot_infections(infections_list, label, test_params, mid_sim_infect_params, 
+                                    vaccine_params, proportion=False, **kwargs):
+        infections = pd.concat(infections_list, axis=0)
+        mean_infections = infections.groupby(by='time').agg('mean') # take mean across replicates
+        bottom = 0
+        x = mean_infections.index
+        if proportion:
+            total_infections_per_day = mean_infections.sum(axis=1)
+            mean_infections = mean_infections/total_infections_per_day[:,None]
+            mean_infections = mean_infections.fillna(0)
+        plt.figure()
+        for strain_idx  in range(n_strains):
+            y = mean_infections[f'strain{strain_idx}']
+            plt.bar(x, y, bottom=bottom, label=f'strain{strain_idx}', color=COLORS[strain_idx], width=1)
+            bottom += y
+        plt.legend()
+        plt.xlim([-1,test_params['end_time']-50])
+        plt.xlabel('time')
+        plt.ylabel(f'{"proportion of " if proportion else ""}infections caused by strains')
+        title_str = f'{label}\n{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, **kwargs)}'
+        plt.title(title_str, fontsize=10 if all([arg is None for arg in [mid_sim_infect_params, vaccine_params]]) else 5)
+        fname = f'prop_infected_per_strain_v3.{label}.{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, fname=True, **kwargs)}{".proportion" if proportion else ""}.png'
+        plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
+        
+    def bivariate_kde(field, sims, sim_labels, test_params, mid_sim_infect_params, 
+                      vaccine_params, **kwargs ):
+        nrows = ceil(len(sims)**(1/2))
+        fig, axs = plt.subplots(nrows=nrows, ncols=nrows, sharey=True, sharex=True)
+        
+        cmaps = ['Blues', 'Oranges','Greens','Reds','Purples','Greys']
+                
+        for idx, (results_list, _) in enumerate(sims):
+                ax = axs[floor(idx/nrows)][idx%nrows]
+                sns.kdeplot(data=pd.concat([results['time'] for results in results_list],axis=0), 
+                            data2=pd.concat([results[field] for results in results_list],axis=0),
+                            levels=10,shade_lowest=False, ax=ax,
+                            cmap=cmaps[idx], label=sim_labels[idx]
+                            )
+                ax.legend(loc='upper left')
+                
+        title_str = f'n_strains: {kwargs["n_strains"]}\n{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, **kwargs)}'
+        plt.suptitle(title_str, fontsize=10 if all([arg is None for arg in [mid_sim_infect_params, vaccine_params]]) else 5)
+        fname = (f'bivarkde_v3_{"-".join([sim_labels[i] for i in range(len(sims))])}.'+
+                 field+f'.{print_sim_id(test_params, mid_sim_infect_params, vaccine_params, fname=True, **kwargs)}.png')
         plt.savefig(f'{PLOTS_DIR}/{fname}', dpi=300)
     
+    # rho = 0
+    # n_strains = 6
+    mid_sim_infect_params = dict(infection_start_time  = [0,200], 
+                                  infection_end_time   = [0,200], 
+                                  n_infections_per_day = [0,1])
+    # vaccine_params = dict(frac_50_59 = 1,
+    #                       frac_60_69 = 1,
+    #                       frac_70_79=1, 
+    #                       frac_80 = 1,
+    #                       efficacy = 1)
 
-    n_strains = 6
-    for trans_mult in [
-            [1+0.2*strain_idx for strain_idx in range(n_strains)],
-            [1]*n_strains, 
-                       ]:
-        all_params = dict(test_params = dict(n_total = 10000,
-                                             end_time = 400, 
-                                             infectious_rate=3), # default infectious_rate: 5.18
-                          n_strains         = n_strains,
-                          n_seed_infections = [0]*n_strains,
-                          trans_mult        = trans_mult,
+    for n_strains in [2]:
+        for trans_mult in [
+                # [1]*n_strains,
+                # [1+0.1*strain_idx for strain_idx in range(n_strains)],
+                [1+1*strain_idx for strain_idx in range(n_strains)],
+                ]:
+            all_params = dict(test_params = dict(n_total = 10000,
+                                                 end_time = 450), # default infectious_rate: 5.18
+                              n_strains         = n_strains,
+                              n_seed_infections = [50,0],
+                              trans_mult        = trans_mult,
+                              rng_seed_range    = range(1,51),
+                              mid_sim_infect_params = mid_sim_infect_params,
+                              vaccine_params = None)
+            full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
+            zero = np.identity(all_params['n_strains'])
+            half = np.full(shape=(all_params['n_strains'],all_params['n_strains']), fill_value=0.5)
+            np.fill_diagonal(half, 1)
+            cross_immunity_list = [full,
+                                    half,
+                                    zero]
+            # cross_immunity_list = [full,
+            #                         np.triu(full, 0),# half_prob,
+            #                         np.tril(full, 0),
+            #                         zero]
+            # cross_immunity_list = [full,
+            #                         half,
+            #                         zero,
+            #                         [[1, 0.5, 0.4],
+            #                          [0.5, 1, 0.4],
+            #                          [0.5, 0.5, 1]],
+            #                         [[1, 0.5, 0.75],
+            #                          [0.5, 1, 0.75],
+            #                          [0.5, 0.5, 1]]]
+            # cross_immunity_list = [full,
+            #                         half, 
+            #                         zero, 
+            #                         [[round(1-0.1*abs(i-j),1) for j in range(n_strains)] 
+            #                         for i in range(n_strains)],
+            #                         [[round(1-0.2*abs(i-j),1) for j in range(n_strains)] 
+            #                         for i in range(n_strains)]]
+            # cross_immunity_list = [[[round(1-0.025*abs(i-j),1) for j in range(n_strains)] 
+            #                         for i in range(n_strains)],
+            #                         [[round(1-0.05*abs(i-j),1) for j in range(n_strains)] 
+            #                         for i in range(n_strains)],
+            #                         [[round(1-0.1*abs(i-j),1) for j in range(n_strains)] 
+            #                         for i in range(n_strains)],
+            #                         ]
+            sim_labels = ['full','half', 'zero']
+            # sim_labels = ['full', 'tri upper', 'tri lower', 'zero']
+            # sim_labels = ['full','half', 'zero', 'diverge0.1', 'diverge0.2']
+            # sim_labels = ['diverge0.025', 'diverge0.05', 'diverge0.1']
+            # rho_list = [0,0.1,0.5,1]
+            # sim_labels = [f'half-rho{rho}' for rho in rho_list]
+            # cross_immunity_list = [half for _ in rho_list]
+        # for rho in rho_list:
+            
+            if n_strains==1:
+                cross_immunity_list = cross_immunity_list[:1]
+                sim_labels=sim_labels[:1]
+            
+            sims = []
+            for idx, cross_immunity in enumerate(cross_immunity_list):
+                results_list, infections_list = run_simulation(cross_immunity=cross_immunity, 
+                                                               **all_params)
+                sims.append((results_list, infections_list))
+                plot_infections_by_strain(infections_list=infections_list,
+                                          label=sim_labels[idx],
+                                          **all_params)
+                plot_infections_by_strain(infections_list=infections_list,
+                                          label=sim_labels[idx],
+                                          agg=False,
+                                          **all_params)
+                stacked_bar_plot_infections(infections_list=infections_list,
+                                            label=sim_labels[idx],
+                                            **all_params)
+                stacked_bar_plot_infections(infections_list=infections_list,
+                                            label=sim_labels[idx],
+                                            proportion=True,
+                                            **all_params)
+                plt.close('all')
+            
+            for field in ['total_infected']:
+                plot_scenarios(field=field, 
+                                cross_immunity_sims=sims, 
+                                cross_immunity_labels=sim_labels,
+                                **all_params)
+                plot_scenarios(field=field, 
+                               cross_immunity_sims=sims, 
+                               cross_immunity_labels=sim_labels,
+                               agg=False,
+                               **all_params)
+                bivariate_kde(field=field, 
+                              sims=sims, 
+                              sim_labels=sim_labels, 
+                              **all_params)
+                plt.close('all')
+
+def test_corr_cross_immunity():
+    def corr_cross_immunity_sim( rho, cross_immunity_p, n_strains, 
+                                test_params = dict(rng_seed = 1, n_total = 10000, end_time = 50)):
+        params = utils.get_params_swig()
+        if test_params is not None:
+            for param, value in test_params.items():
+                params.set_param( param, value )  
+        model  = utils.get_model_swig( params )
+        # covid19.set_up_cross_immunity_draws(model.c_model, rho)
+        cross_immunity = np.full(shape=(n_strains,n_strains), fill_value=cross_immunity_p)
+        np.fill_diagonal(cross_immunity, 1)
+        model.set_cross_immunity_matrix(cross_immunity=cross_immunity)
+        infect_with_strains(model=model, 
+                            n_infections_per_strain=[round(120/n_strains)]*n_strains, 
+                            trans_mult=[1]*n_strains)
+        for _ in range( model.c_params.end_time ):
+            model.one_time_step()
+        # print(f'rho: {rho}, cross_imm p: {cross_immunity_p}, total_infected: {model.results.total_infected.values[-1]}\n')
+        return model.results.total_infected.values[-1]
+        del model, params
+    
+    def plot_heatmap( data, title, xticklabels, yticklabels, xlabel, ylabel, cbar_label, test_params, **kwargs):
+        plt.figure()
+        sns.heatmap(data, yticklabels = yticklabels, xticklabels = xticklabels,
+                    cbar_kws = {'label': cbar_label})
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        plt.title(print_sim_id(test_params, **kwargs))
+        fname = f'heatmap.{cbar_label.replace(" ","_")}.{print_sim_id(test_params, fname=True, **kwargs)}.png'
+        plt.savefig(f'{PLOTS_DIR}/{fname}',dpi=300)
+        
+    
+    rng_seed_range = range(1,51)
+    n_strains_list = [60,40,30,20,15,10,5,2]
+    cross_immunity_p_list = [0.95] #np.round(np.linspace(0,1,3),2)
+    rho_list = np.round(np.linspace(0,1,11),2)
+    test_params = dict(n_total = 10000, 
+                       end_time = 50,
+                       infectious_rate = 5)
+    for cross_immunity_p in cross_immunity_p_list:
+        print(f'cross_immunity: {cross_immunity_p}')
+        total_infected_mean = np.zeros(shape=(len(n_strains_list), len(rho_list)))
+        total_infected_std = np.zeros(shape=(len(n_strains_list), len(rho_list)))
+        for i, n_strains in enumerate(n_strains_list):
+            print(f'n_strains: {n_strains}')
+            for j, rho in enumerate(rho_list):
+                print(f'rho: {rho}')
+                total_infected = []
+                for rng_seed in rng_seed_range:
+                    test_params_copy = test_params.copy()
+                    test_params_copy['rng_seed'] = rng_seed
+                    try:
+                        total_infected.append(corr_cross_immunity_sim(rho=rho, 
+                                                                      cross_immunity_p=cross_immunity_p,
+                                                                      n_strains = n_strains,
+                                                                      test_params=test_params,
+                                                                      ))
+                    except:
+                        print(f'Failed rng_seed: {rng_seed}')
+                total_infected_mean[i][j] = np.mean(total_infected)
+                total_infected_std[i][j] = np.std(total_infected)
+        
+        all_params = dict(test_params       = test_params,
                           rng_seed_range    = range(1,51),
-                          mid_sim_infect_params = dict(infection_start_time = [50*strain_idx for strain_idx in range(n_strains)],
-                                                       infection_end_time   = [np.inf]*n_strains,
-                                                       n_infections_per_day = [1]*n_strains))
-    
-        full = np.ones(shape=(all_params['n_strains'],all_params['n_strains']))
-        zero = np.identity(all_params['n_strains'])
-        half = np.full(shape=(all_params['n_strains'],all_params['n_strains']), fill_value=0.5)
-        np.fill_diagonal(half, 1)
-        # cross_immunity_list = [full,
-        #                         half,
-        #                         zero]
-        # cross_immunity_list = [full,
-        #                         np.triu(full, 0),# half_prob,
-        #                         np.tril(full, 0),
-        #                         zero]
-        # cross_immunity_list = [full,
-        #                         half,
-        #                         zero,
-        #                         [[1, 0.5, 0.4],
-        #                          [0.5, 1, 0.4],
-        #                          [0.5, 0.5, 1]],
-        #                         [[1, 0.5, 0.75],
-        #                          [0.5, 1, 0.75],
-        #                          [0.5, 0.5, 1]]]
-        cross_immunity_list = [full,
-                               half, 
-                               zero, 
-                               [[round(1-0.1*abs(i-j),2) for j in range(n_strains)] 
-                                for i in range(n_strains)],
-                               [[round(1-0.2*abs(i-j),2) for j in range(n_strains)] 
-                                for i in range(n_strains)]]
-        # cross_immunity_labels = ['full', 'half', 'zero']
-        # cross_immunity_labels = ['full', 'tri upper', 'tri lower', 'zero']
-        # cross_immunity_labels = ['full', 'half', 'zero', 'strain2_0.4', 'strain2_0.75']
-        cross_immunity_labels = ['full','half', 'zero', 'diverge0.1', 'diverge0.2']
+                          cross_immunity_p  = cross_immunity_p)
         
-        cross_immunity_sims = []
-        for idx, cross_immunity in enumerate(cross_immunity_list):
-            results_list, infections_list = run_simulation(cross_immunity=cross_immunity, 
-                                                           **all_params)
-            cross_immunity_sims.append((results_list, infections_list))
-            plot_infections_by_strain(infections_list=infections_list,
-                                      label=cross_immunity_labels[idx],
-                                      **all_params)
-            plt.close()
-            plot_infections_by_strain(infections_list=infections_list,
-                                      label=cross_immunity_labels[idx],
-                                      agg=False,
-                                      **all_params)
-            plt.close()
-        
-        for field in ['total_infected']:
-            plot_scenarios(field=field, 
-                           cross_immunity_sims=cross_immunity_sims, 
-                           cross_immunity_labels=cross_immunity_labels,
-                           **all_params)
-            plt.close()
-            plot_scenarios(field=field, 
-                           cross_immunity_sims=cross_immunity_sims, 
-                           cross_immunity_labels=cross_immunity_labels,
-                           agg=False,
-                           **all_params)
-            plt.close()
-    
+        plot_heatmap(data=total_infected_mean, title=f'cross-immunity prob. = {cross_immunity_p}', 
+                     xticklabels=rho_list, yticklabels=n_strains_list, xlabel='rho', 
+                     ylabel='n_strains', cbar_label='mean final total_infected', 
+                     **all_params)
+        plot_heatmap(data=total_infected_std, title=f'cross-immunity prob. = {cross_immunity_p}', 
+                     xticklabels=rho_list, yticklabels=n_strains_list, xlabel='rho', 
+                     ylabel='n_strains', cbar_label='stdev final total_infected', 
+                     **all_params)
+
 def main():
     destroy()
     set_up()
